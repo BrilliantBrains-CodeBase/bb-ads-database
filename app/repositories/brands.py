@@ -54,6 +54,26 @@ class BrandsRepository:
             {"agency_id": _oid(agency_id), "slug": slug}
         )
 
+    async def find_by_ids(
+        self,
+        brand_ids: list[str],
+        *,
+        active_only: bool = True,
+    ) -> list[Doc]:
+        """Return brands whose _id is in the given list, ordered by name.
+
+        Used by the list endpoint to restrict non-admin users to their
+        allowed_brands without N individual queries.
+        """
+        if not brand_ids:
+            return []
+        oids = [_oid(bid) for bid in brand_ids]
+        q: Doc = {"_id": {"$in": oids}}
+        if active_only:
+            q["is_active"] = True
+        cursor = self._col.find(q).sort("name", 1)
+        return await cursor.to_list(length=None)
+
     async def slug_exists(self, agency_id: str, slug: str) -> bool:
         """True if a brand with this slug already exists under the agency."""
         count = await self._col.count_documents(
