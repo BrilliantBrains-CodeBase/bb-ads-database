@@ -72,3 +72,4 @@ if __name__ == "__main__":
 | Version | Description | Applied | Applied By |
 |---------|-------------|---------|------------|
 | —       | Initial schema via 01_create_indexes.js | Phase 0 | bootstrap |
+| v001    | Backfill `onboarding_status = "pending"` on existing brand docs | Phase 2.5 | — |
