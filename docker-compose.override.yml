@@ -1,0 +1,53 @@
+# Dev overrides — applied automatically by docker-compose when present.
+# NOT committed with production secrets. This file IS committed (no secrets inside).
+
+services:
+
+  api1:
+    build:
+      target: runtime
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/app/app:ro          # hot-reload: mount source code
+      - brand_storage:/data/brands
+    ports:
+      - "8001:8000"                # direct access to replica 1 (bypass nginx)
+    environment:
+      - APP_DEBUG=true
+      - APP_ENV=development
+
+  api2:
+    build:
+      target: runtime
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/app/app:ro
+      - brand_storage:/data/brands
+    ports:
+      - "8002:8000"                # direct access to replica 2
+    environment:
+      - APP_DEBUG=true
+      - APP_ENV=development
+
+  worker:
+    command: ["python", "-m", "app.worker.scheduler", "--dev"]
+    volumes:
+      - ./app:/app/app:ro
+    environment:
+      - APP_DEBUG=true
+      - APP_ENV=development
+
+  nginx:
+    ports:
+      - "80:80"                    # no 443 in dev (no certs)
+
+  mongodb:
+    ports:
+      - "27017:27017"              # expose for local DB tools (Compass, etc.)
+
+  redis:
+    ports:
+      - "6379:6379"                # expose for local inspection
+
+  mongo-express:
+    profiles: []                   # enable in dev without --profile flag

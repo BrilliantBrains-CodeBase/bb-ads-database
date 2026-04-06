@@ -1,0 +1,150 @@
+name: Deploy
+
+# Triggers on version tags: v1.0.0, v1.2.3, etc.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Job 1: Build + push release image to GHCR
+  # Tagged with both the git tag and the short SHA
+  # ──────────────────────────────────────────────────────────────
+  release-image:
+    name: Build Release Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 2: Deploy to VPS
+  # Rolling restart: api1 → health check → api2 → health check → worker
+  # Auto-rollback on failure
+  # ──────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: release-image
+    environment: production   # requires manual approval in GitHub Environments settings
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── TODO: configure these secrets in GitHub repo settings ──
+      # Secrets required:
+      #   VPS_HOST          — IP or hostname of the Hetzner VPS
+      #   VPS_USER          — SSH user (e.g. deploy)
+      #   VPS_SSH_KEY       — Private key for VPS_USER
+      #   VPS_DEPLOY_PATH   — Absolute path on VPS (e.g. /opt/bb-ads)
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.VPS_DEPLOY_PATH }}
+
+            IMAGE="${{ env.IMAGE_NAME }}:${{ needs.release-image.outputs.image-tag }}"
+            echo "==> Deploying image: $IMAGE"
+
+            # Pull new image before touching running containers
+            docker pull "$IMAGE"
+
+            # Record current image tag for rollback
+            PREV_TAG=$(docker inspect --format='{{index .Config.Image}}' bb-ads-api1 2>/dev/null || echo "none")
+
+            # Rolling restart: api1 first
+            echo "==> Restarting api1..."
+            docker compose up -d --no-deps --force-recreate \
+              --image "$IMAGE" api1
+
+            # Wait for api1 to pass health check (max 60s)
+            for i in $(seq 1 12); do
+              if docker inspect --format='{{.State.Health.Status}}' bb-ads-api1 2>/dev/null | grep -q "healthy"; then
+                echo "api1 healthy"
+                break
+              fi
+              if [ "$i" -eq 12 ]; then
+                echo "ERROR: api1 failed health check — rolling back"
+                docker compose up -d --no-deps --force-recreate \
+                  --image "$PREV_TAG" api1 api2 || true
+                exit 1
+              fi
+              sleep 5
+            done
+
+            # api2
+            echo "==> Restarting api2..."
+            docker compose up -d --no-deps --force-recreate \
+              --image "$IMAGE" api2
+
+            for i in $(seq 1 12); do
+              if docker inspect --format='{{.State.Health.Status}}' bb-ads-api2 2>/dev/null | grep -q "healthy"; then
+                echo "api2 healthy"
+                break
+              fi
+              if [ "$i" -eq 12 ]; then
+                echo "ERROR: api2 failed health check — rolling back"
+                docker compose up -d --no-deps --force-recreate \
+                  --image "$PREV_TAG" api1 api2 || true
+                exit 1
+              fi
+              sleep 5
+            done
+
+            # Worker (no health check — just restart)
+            echo "==> Restarting worker..."
+            docker compose up -d --no-deps --force-recreate \
+              --image "$IMAGE" worker
+
+            echo "==> Deploy complete: $IMAGE"
+
+      - name: Notify on failure
+        if: failure()
+        # TODO: replace with Telegram notification in Phase 2 (observability week)
+        run: |
+          echo "Deploy FAILED for tag ${{ github.ref_name }}"
+          echo "Check GitHub Actions logs and VPS docker logs for details."
