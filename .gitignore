@@ -51,6 +51,7 @@ docker-compose.override.yml.local
 Thumbs.db
 
 # Secrets / credentials
+keys/
 *.pem
 *.key
 *.p12
