@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     # ── ClickUp ───────────────────────────────────────────────────
     clickup_api_token: str = ""
     clickup_onboarding_list_id: str = ""
+    clickup_webhook_secret: str = ""  # HMAC-SHA256 secret set in ClickUp webhook config
 
     # ── Telegram ─────────────────────────────────────────────────
     telegram_bot_token: str = ""

@@ -12,11 +12,10 @@ Brands router
 
 from __future__ import annotations
 
-import time
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.v1.schemas.brands import (
@@ -24,6 +23,7 @@ from app.api.v1.schemas.brands import (
     BrandListResponse,
     BrandResponse,
     BrandUpdate,
+    ChecklistItem,
     OnboardingStatusResponse,
 )
 from app.core.database import get_database
@@ -253,16 +253,60 @@ async def get_onboarding_status(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
 ) -> OnboardingStatusResponse:
+    """Return onboarding status + live checklist progress from ClickUp."""
     repo = BrandsRepository(db)
     doc = await repo.find_by_id(brand_id)
     if not doc:
         raise NotFoundError("Brand not found.")
+
+    task_id: str | None = doc.get("clickup_task_id")
+    checklist_items: list[ChecklistItem] | None = None
+    checklist_resolved = 0
+    checklist_total = 0
+
+    # Fetch live checklist from ClickUp when task exists (best-effort)
+    if task_id:
+        try:
+            task = await clickup.get_task(task_id)
+            if task:
+                # Sync status back to DB if it changed in ClickUp
+                raw_status: str = task.get("status", {}).get("status", "")
+                if raw_status:
+                    mapped = clickup.map_clickup_status(raw_status)
+                    if mapped != doc.get("onboarding_status"):
+                        await repo.set_onboarding_status(brand_id, mapped)
+                        doc["onboarding_status"] = mapped
+
+                # Flatten all checklists into one item list
+                all_items: list[ChecklistItem] = []
+                for cl in task.get("checklists", []):
+                    for item in cl.get("items", []):
+                        ci = ChecklistItem(
+                            name=item.get("name", ""),
+                            resolved=bool(item.get("resolved", False)),
+                        )
+                        all_items.append(ci)
+                if all_items:
+                    checklist_items = all_items
+                    checklist_resolved = sum(1 for i in all_items if i.resolved)
+                    checklist_total = len(all_items)
+        except Exception as exc:
+            logger.warning(
+                "brand.checklist_fetch_failed",
+                brand_id=brand_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+
     return OnboardingStatusResponse(
         brand_id=brand_id,
         onboarding_status=doc.get("onboarding_status", "pending"),
-        clickup_task_id=doc.get("clickup_task_id"),
+        clickup_task_id=task_id,
         storage_path=doc.get("storage_path"),
         onboarded_at=doc.get("onboarded_at"),
+        checklist=checklist_items,
+        checklist_resolved=checklist_resolved,
+        checklist_total=checklist_total,
     )
 
 

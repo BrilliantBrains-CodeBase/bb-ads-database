@@ -28,11 +28,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await connect_db(settings)
     await connect_redis(settings)
 
+    # Start the scheduler when this process is designated as the worker.
+    # In multi-replica deployments only the `worker` instance runs jobs;
+    # API replicas skip this to avoid duplicate runs.
+    _scheduler_enabled = (
+        settings.app_instance == "worker"
+        or settings.app_env == "development"
+    )
+    if _scheduler_enabled:
+        from app.worker.scheduler import start_scheduler
+        await start_scheduler()
+
     logger.info("app.ready")
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────
     logger.info("app.shutting_down")
+    if _scheduler_enabled:
+        from app.worker.scheduler import stop_scheduler
+        await stop_scheduler()
     await disconnect_redis()
     await disconnect_db()
     logger.info("app.stopped")

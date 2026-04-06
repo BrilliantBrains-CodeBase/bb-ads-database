@@ -89,9 +89,18 @@ class BrandListResponse(BaseModel):
     total: int
 
 
+class ChecklistItem(BaseModel):
+    name: str
+    resolved: bool
+
+
 class OnboardingStatusResponse(BaseModel):
     brand_id: str
     onboarding_status: str
     clickup_task_id: str | None = None
     storage_path: str | None = None
     onboarded_at: datetime | None = None
+    # Populated when ClickUp is configured and the task is fetchable
+    checklist: list[ChecklistItem] | None = None
+    checklist_resolved: int = 0      # number of ticked items
+    checklist_total: int = 0         # total items (0 = not yet fetched)
