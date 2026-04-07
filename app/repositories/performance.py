@@ -461,3 +461,94 @@ class PerformanceRepository(BrandScopedRepository):
         ]
         results = await self.aggregate(pipeline)
         return results[0] if results else None
+
+    async def get_rollup_aggregates(
+        self,
+        date_from: date,
+        date_to: date,
+    ) -> list[Doc]:
+        """Per-source aggregates PLUS a cross-platform "all" aggregate.
+
+        Used exclusively by the rollup computation service to build
+        pre-computed rollup documents for the performance_rollups collection.
+
+        Each returned item contains:
+          { source, total_spend_paise, total_impressions, total_clicks,
+            total_leads, total_conversions, total_conversion_value_paise,
+            avg_roas, avg_cpl_paise, avg_ctr }
+
+        Returns [] when the brand has no data in the date range.
+        The "all" entry always appears last and is only added when at least
+        one per-source row exists (avoids a zeroed group on empty input).
+        """
+        match: Doc = {
+            "date": {
+                "$gte": _day_to_utc(date_from),
+                "$lte": _day_to_utc(date_to),
+            }
+        }
+
+        _group_accumulators: Doc = {
+            "total_spend_paise":            {"$sum": "$spend_paise"},
+            "total_impressions":            {"$sum": "$impressions"},
+            "total_clicks":                 {"$sum": "$clicks"},
+            "total_leads":                  {"$sum": "$leads"},
+            "total_conversions":            {"$sum": "$conversions"},
+            "total_conversion_value_paise": {"$sum": "$conversion_value_paise"},
+        }
+
+        # Derived KPI addFields: division guards against zero denominators
+        _derived: Doc = {
+            "avg_roas": {"$cond": [
+                {"$gt": ["$total_spend_paise", 0]},
+                {"$divide": ["$total_conversion_value_paise", "$total_spend_paise"]},
+                None,
+            ]},
+            "avg_cpl_paise": {"$cond": [
+                {"$gt": ["$total_leads", 0]},
+                {"$divide": ["$total_spend_paise", "$total_leads"]},
+                None,
+            ]},
+            "avg_ctr": {"$cond": [
+                {"$gt": ["$total_impressions", 0]},
+                {"$divide": ["$total_clicks", "$total_impressions"]},
+                None,
+            ]},
+        }
+
+        _projection: Doc = {
+            "_id": 0,
+            "source":                       1,
+            "total_spend_paise":            1,
+            "total_impressions":            1,
+            "total_clicks":                 1,
+            "total_leads":                  1,
+            "total_conversions":            1,
+            "total_conversion_value_paise": 1,
+            "avg_roas":                     1,
+            "avg_cpl_paise":                1,
+            "avg_ctr":                      1,
+        }
+
+        # ── Per-source aggregation ────────────────────────────────────────────
+        per_source = await self.aggregate([
+            {"$match": match},
+            {"$group": {"_id": "$source", **_group_accumulators}},
+            {"$addFields": {"source": "$_id", **_derived}},
+            {"$project": _projection},
+            {"$sort": {"source": 1}},
+        ])
+
+        if not per_source:
+            return []  # no data in this range for this brand
+
+        # ── Cross-platform "all" aggregate ────────────────────────────────────
+        # Only called when we know data exists (avoids mongomock zeroed-group bug)
+        all_agg = await self.aggregate([
+            {"$match": match},
+            {"$group": {"_id": None, **_group_accumulators}},
+            {"$addFields": {"source": "all", **_derived}},
+            {"$project": _projection},
+        ])
+
+        return [*per_source, *all_agg]

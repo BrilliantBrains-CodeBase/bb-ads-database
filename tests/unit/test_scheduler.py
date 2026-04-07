@@ -31,7 +31,8 @@ Coverage
     - meta_token_expiry_check: permanent token (no expiry) skipped
     - meta_token_expiry_check: malformed expiry field doesn't raise
     - token_refresh_google: valid creds logs ok
-    - rollup_computation / anomaly_detection / scheduled_reports:
+    - rollup_computation: calls compute_all_rollups with db instance
+    - anomaly_detection / scheduled_reports:
         graceful no-op when service module not yet implemented (ImportError)
 """
 
@@ -551,12 +552,17 @@ class TestMetaTokenExpiryCheck:
 
 @pytest.mark.asyncio
 class TestStubTasks:
-    async def test_rollup_computation_graceful_on_import_error(self):
+    async def test_rollup_computation_calls_service(self, db):
         from app.worker import tasks
 
-        with patch.dict("sys.modules", {"app.services.rollup": None}):
-            # Should not raise
+        mock_compute = AsyncMock()
+        with (
+            patch("app.worker.tasks.get_db_direct", return_value=db),
+            patch("app.services.rollup.compute_all_rollups", mock_compute),
+        ):
             await tasks.rollup_computation()
+
+        mock_compute.assert_awaited_once_with(db)
 
     async def test_anomaly_detection_graceful_on_import_error(self):
         from app.worker import tasks

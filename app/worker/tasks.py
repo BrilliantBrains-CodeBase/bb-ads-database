@@ -132,13 +132,10 @@ async def rollup_computation() -> None:
     log.info("task.started")
 
     try:
-        from app.services.rollup import compute_all_rollups  # Phase 5 — not yet implemented
-        from app.core.database import get_db_direct
+        from app.services.rollup import compute_all_rollups
         db = get_db_direct()
         await compute_all_rollups(db)
         log.info("task.finished")
-    except ImportError:
-        log.info("task.skipped", reason="rollup service not yet implemented (Phase 5)")
     except Exception as exc:
         log.error("task.failed", error=str(exc), exc_info=True)
         raise
