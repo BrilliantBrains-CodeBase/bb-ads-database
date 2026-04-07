@@ -92,11 +92,6 @@ def create_app() -> FastAPI:
     # ── Routers ──────────────────────────────────────────────────
     _register_routers(app)
 
-    # ── Health endpoint (public, no auth, no rate limit) ─────────
-    @app.get("/health", tags=["health"], include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
     return app
 
 
@@ -108,6 +103,7 @@ def _register_routers(app: FastAPI) -> None:
         brands,
         campaigns,
         claude,
+        health,
         ingestion,
         performance,
         reports,
@@ -115,6 +111,9 @@ def _register_routers(app: FastAPI) -> None:
     )
 
     api_prefix = "/api/v1"
+
+    # Health check is at /health (no /api/v1 prefix — matches nginx probe path)
+    app.include_router(health.router)
 
     app.include_router(auth.router, prefix=api_prefix)
     app.include_router(brands.router, prefix=api_prefix)
