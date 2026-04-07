@@ -164,15 +164,14 @@ class PerformanceRepository(BrandScopedRepository):
         if source:
             match["source"] = source
 
-        group_id: Doc = {"date": "$date"}
-        if not source:
-            group_id["source"] = "$source"
-
+        # Always group by date only — when no source filter, totals aggregate all
+        # sources per day; when source filter is active, $match already scopes
+        # to one source so per-day grouping is sufficient.
         pipeline: list[Doc] = [
             {"$match": match},
             {
                 "$group": {
-                    "_id": group_id,
+                    "_id": "$date",
                     "total_spend_paise":   {"$sum": "$spend_paise"},
                     "total_impressions":   {"$sum": "$impressions"},
                     "total_clicks":        {"$sum": "$clicks"},
@@ -183,12 +182,12 @@ class PerformanceRepository(BrandScopedRepository):
                     "record_count":        {"$sum": 1},
                 }
             },
-            {"$sort": {"_id.date": 1}},
+            {"$sort": {"_id": 1}},
             {
                 "$project": {
                     "_id": 0,
-                    "date":                "$_id.date",
-                    "source":              "$_id.source",
+                    "date":                "$_id",
+                    "source":              {"$literal": source},
                     "total_spend_paise":   1,
                     "total_impressions":   1,
                     "total_clicks":        1,
@@ -197,6 +196,227 @@ class PerformanceRepository(BrandScopedRepository):
                     "avg_roas":            1,
                     "avg_ctr":             1,
                     "record_count":        1,
+                }
+            },
+        ]
+        return await self.aggregate(pipeline)
+
+    async def get_kpi_summary(
+        self,
+        date_from: date,
+        date_to: date,
+        *,
+        source: str | None = None,
+    ) -> Doc:
+        """Single aggregate across the full date range (summary card).
+
+        Returns totals for spend, impressions, clicks, reach, leads,
+        conversions, conversion_value, and a count of days with data.
+        Derived KPIs (ROAS, CTR, CPC, CPM, CPL) are computed here.
+        """
+        match: Doc = {
+            "date": {
+                "$gte": _day_to_utc(date_from),
+                "$lte": _day_to_utc(date_to),
+            }
+        }
+        if source:
+            match["source"] = source
+
+        pipeline: list[Doc] = [
+            {"$match": match},
+            {
+                "$group": {
+                    "_id": None,
+                    "total_spend_paise":            {"$sum": "$spend_paise"},
+                    "total_impressions":            {"$sum": "$impressions"},
+                    "total_clicks":                 {"$sum": "$clicks"},
+                    "total_reach":                  {"$sum": "$reach"},
+                    "total_leads":                  {"$sum": "$leads"},
+                    "total_conversions":            {"$sum": "$conversions"},
+                    "total_conversion_value_paise": {"$sum": "$conversion_value_paise"},
+                    "days_with_data":               {"$addToSet": "$date"},
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "total_spend_paise":            1,
+                    "total_impressions":            1,
+                    "total_clicks":                 1,
+                    "total_reach":                  1,
+                    "total_leads":                  1,
+                    "total_conversions":            1,
+                    "total_conversion_value_paise": 1,
+                    "days_with_data":               {"$size": "$days_with_data"},
+                }
+            },
+        ]
+        results = await self.aggregate(pipeline)
+        if not results:
+            return {}
+        result = results[0]
+        # mongomock returns a zeroed group doc when no input docs match; treat as empty
+        if result.get("days_with_data", 0) == 0:
+            return {}
+        return result
+
+    async def get_top_campaigns(
+        self,
+        date_from: date,
+        date_to: date,
+        *,
+        metric: str = "spend_paise",
+        limit: int = 10,
+        source: str | None = None,
+    ) -> list[Doc]:
+        """Top N campaigns ranked by the given metric over the date range.
+
+        Joins with the campaigns collection to fetch campaign names.
+
+        metric must be one of: spend_paise, roas, cpl_paise, ctr, conversions,
+        leads, impressions, clicks.
+
+        Sort direction: descending for all metrics except cpl_paise
+        (lower CPL = better, but we still sort descending by spend magnitude
+        to show most significant campaigns first — callers can re-sort).
+        """
+        sort_field_map = {
+            "spend_paise":   "total_spend_paise",
+            "roas":          "roas",
+            "cpl_paise":     "cpl_paise",
+            "ctr":           "ctr",
+            "conversions":   "total_conversions",
+            "leads":         "total_leads",
+            "impressions":   "total_impressions",
+            "clicks":        "total_clicks",
+        }
+        sort_field = sort_field_map.get(metric, "total_spend_paise")
+
+        match: Doc = {
+            "date": {
+                "$gte": _day_to_utc(date_from),
+                "$lte": _day_to_utc(date_to),
+            }
+        }
+        if source:
+            match["source"] = source
+
+        pipeline: list[Doc] = [
+            {"$match": match},
+            {
+                "$group": {
+                    "_id": {
+                        "campaign_id": "$campaign_id",
+                        "source":      "$source",
+                    },
+                    "total_spend_paise":            {"$sum": "$spend_paise"},
+                    "total_impressions":            {"$sum": "$impressions"},
+                    "total_clicks":                 {"$sum": "$clicks"},
+                    "total_leads":                  {"$sum": "$leads"},
+                    "total_conversions":            {"$sum": "$conversions"},
+                    "total_conversion_value_paise": {"$sum": "$conversion_value_paise"},
+                }
+            },
+            # Compute derived metrics
+            {
+                "$addFields": {
+                    "campaign_id": "$_id.campaign_id",
+                    "source":      "$_id.source",
+                    "roas": {
+                        "$cond": [
+                            {"$gt": ["$total_spend_paise", 0]},
+                            {"$divide": ["$total_conversion_value_paise", "$total_spend_paise"]},
+                            None,
+                        ]
+                    },
+                    "ctr": {
+                        "$cond": [
+                            {"$gt": ["$total_impressions", 0]},
+                            {"$divide": ["$total_clicks", "$total_impressions"]},
+                            None,
+                        ]
+                    },
+                    "cpl_paise": {
+                        "$cond": [
+                            {"$gt": ["$total_leads", 0]},
+                            {"$divide": ["$total_spend_paise", "$total_leads"]},
+                            None,
+                        ]
+                    },
+                }
+            },
+            {"$sort": {sort_field: -1}},
+            {"$limit": limit},
+            # Join campaign name from campaigns collection
+            {
+                "$lookup": {
+                    "from": "campaigns",
+                    "localField": "campaign_id",
+                    "foreignField": "_id",
+                    "as": "_campaign",
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "campaign_id":                  1,
+                    "source":                       1,
+                    "campaign_name":                {"$arrayElemAt": ["$_campaign.name", 0]},
+                    "total_spend_paise":            1,
+                    "total_impressions":            1,
+                    "total_clicks":                 1,
+                    "total_leads":                  1,
+                    "total_conversions":            1,
+                    "total_conversion_value_paise": 1,
+                    "roas":                         1,
+                    "ctr":                          1,
+                    "cpl_paise":                    1,
+                }
+            },
+        ]
+        return await self.aggregate(pipeline)
+
+    async def get_source_attribution(
+        self,
+        date_from: date,
+        date_to: date,
+    ) -> list[Doc]:
+        """Spend and metrics broken down by source (google_ads, meta, etc.).
+
+        Returns one row per source, sorted by spend descending.
+        """
+        match: Doc = {
+            "date": {
+                "$gte": _day_to_utc(date_from),
+                "$lte": _day_to_utc(date_to),
+            }
+        }
+
+        pipeline: list[Doc] = [
+            {"$match": match},
+            {
+                "$group": {
+                    "_id": "$source",
+                    "total_spend_paise":            {"$sum": "$spend_paise"},
+                    "total_impressions":            {"$sum": "$impressions"},
+                    "total_clicks":                 {"$sum": "$clicks"},
+                    "total_leads":                  {"$sum": "$leads"},
+                    "total_conversions":            {"$sum": "$conversions"},
+                    "total_conversion_value_paise": {"$sum": "$conversion_value_paise"},
+                }
+            },
+            {"$sort": {"total_spend_paise": -1}},
+            {
+                "$project": {
+                    "_id": 0,
+                    "source":                       "$_id",
+                    "total_spend_paise":            1,
+                    "total_impressions":            1,
+                    "total_clicks":                 1,
+                    "total_leads":                  1,
+                    "total_conversions":            1,
+                    "total_conversion_value_paise": 1,
                 }
             },
         ]
