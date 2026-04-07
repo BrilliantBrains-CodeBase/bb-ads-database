@@ -268,6 +268,20 @@ class BaseIngestionService(ABC):
             run_id, final_status, total_fetched, total_upserted, error_msg
         )
 
+        # Invalidate Redis cache so dashboards see fresh data immediately.
+        # Only invalidate on success/partial — a fully failed run wrote nothing.
+        if final_status in ("success", "partial"):
+            try:
+                from app.core.cache import invalidate_brand_cache
+                await invalidate_brand_cache(brand_id)
+            except Exception as exc:
+                logger.warning(
+                    "ingestion.cache.invalidation_failed",
+                    brand_id=brand_id,
+                    run_id=run_id,
+                    error=str(exc),
+                )
+
         log.info(
             "ingestion.run.finished",
             status=final_status,

@@ -36,6 +36,15 @@ from app.api.v1.schemas.performance import (
     TrendPoint,
     TrendResponse,
 )
+from app.core.cache import (
+    CACHE_TTL_ATTRIBUTION,
+    CACHE_TTL_DAILY,
+    CACHE_TTL_ROLLUP,
+    CACHE_TTL_SUMMARY,
+    CACHE_TTL_TOP,
+    CACHE_TTL_TREND,
+    cached,
+)
 from app.core.database import get_database
 from app.middleware.brand_scope import BrandAccess
 from app.repositories.performance import PerformanceRepository
@@ -57,6 +66,7 @@ def _default_date_from() -> date:
 # ── GET /brands/{brand_id}/performance/daily ──────────────────────────────────
 
 @router.get("/{brand_id}/performance/daily", response_model=DailyResponse)
+@cached(ttl=CACHE_TTL_DAILY)
 async def get_daily(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
@@ -97,6 +107,7 @@ async def get_daily(
 # ── GET /brands/{brand_id}/performance/rollup ─────────────────────────────────
 
 @router.get("/{brand_id}/performance/rollup", response_model=RollupResponse)
+@cached(ttl=CACHE_TTL_ROLLUP)
 async def get_rollup(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
@@ -149,6 +160,7 @@ async def get_rollup(
 # ── GET /brands/{brand_id}/performance/summary ────────────────────────────────
 
 @router.get("/{brand_id}/performance/summary", response_model=KpiSummary)
+@cached(ttl=CACHE_TTL_SUMMARY)
 async def get_summary(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
@@ -196,6 +208,7 @@ async def get_summary(
 # ── GET /brands/{brand_id}/performance/top-campaigns ─────────────────────────
 
 @router.get("/{brand_id}/performance/top-campaigns", response_model=TopCampaignsResponse)
+@cached(ttl=CACHE_TTL_TOP)
 async def get_top_campaigns(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
@@ -239,6 +252,7 @@ async def get_top_campaigns(
 # ── GET /brands/{brand_id}/performance/trend ─────────────────────────────────
 
 @router.get("/{brand_id}/performance/trend", response_model=TrendResponse)
+@cached(ttl=CACHE_TTL_TREND)
 async def get_trend(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
@@ -273,6 +287,7 @@ async def get_trend(
 # ── GET /brands/{brand_id}/performance/attribution ────────────────────────────
 
 @router.get("/{brand_id}/performance/attribution", response_model=AttributionResponse)
+@cached(ttl=CACHE_TTL_ATTRIBUTION)
 async def get_attribution(
     brand_id: Annotated[str, Depends(BrandAccess)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],  # type: ignore[type-arg]
